@@ -1,26 +1,41 @@
+// Crablo - Clone di Diablo in Rust
+// Bootcamp Rust parte 2 - Francesco Ciulla
+
 #![allow(dead_code)]
 use macroquad::prelude::*;
 use std::collections::VecDeque;
 
+// Dimensione della griglia di gioco (20x20 celle)
 const MAP: usize = 20;
-//  dimensione del tile
+// Dimensione del tile isometrico (larghezza, altezza)
+// La vista isometrica usa un rapporto 2:1 (32 pixel largo, 16 alto)
 const T_SIZE: (f32, f32) = (32., 16.);
 
-// Enum per gestire stati gioco
+// Enum per gestire gli stati del gioco (state machine)
 enum AppState {
-    Menu,
-    Playing,
-    GameOver,
+    Menu,     // Schermata iniziale
+    Playing,  // Partita in corso
+    GameOver, // Fine partita
 }
 
-// Enum per tile
+// Enum per i tipi di celle della mappa
 #[derive(Copy, Clone, PartialEq)]
 enum Tile {
-    Wall,
-    Floor,
+    Wall,  // Muro: blocca il movimento
+    Floor, // Pavimento: calpestabile
 }
 
-//Math Helper translate grid to isometric view
+// Struttura per i mostri nemici
+struct Monster {
+    x: usize, // Posizione X sulla griglia
+    y: usize, // Posizione Y sulla griglia
+    hp: i32,  // Punti vita
+    cd: i32,  // Cooldown per azioni (attacco/movimento)
+}
+
+// Converte coordinate griglia (x, y) → coordinate schermo (sx, sy)
+// Formula isometrica: la X schermo dipende dalla differenza (x-y),
+// la Y schermo dipende dalla somma (x+y). cam è l'offset della camera.
 fn to_screen(x: usize, y: usize, cam: (f32, f32)) -> (f32, f32) {
     (
         (x as f32 - y as f32) * T_SIZE.0 + cam.0,
@@ -95,84 +110,111 @@ fn bfs(
     vec![]
 }
 
-// draw hero and monsters
-fn draw_stickman(x: usize, y: usize, cam: (f32, f32)) {
+// Disegna uno stickman (player o mostro)
+// enemy=true: disegna con corna (mostro), enemy=false: disegna con testa tonda (player)
+fn draw_stickman(x: usize, y: usize, cam: (f32, f32), enemy: bool) {
     let (sx, mut sy) = to_screen(x, y, cam);
     sy += 16.;
 
-    // shadow
+    // Ombra a terra
     draw_ellipse(sx, sy + 3., 10., 5., 0., Color::new(0., 0., 0., 0.2));
-    // head
-    draw_circle_lines(sx, sy - 32., 7., 2., BLACK);
-    // body and limbs
+
+    // Testa: corna per i nemici, cerchio per il player
+    if enemy {
+        // Corna del mostro (due linee a V)
+        draw_line(sx - 5., sy - 32., sx, sy - 30., 2., BLACK);
+        draw_line(sx + 5., sy - 32., sx, sy - 30., 2., BLACK);
+    } else {
+        // Testa tonda del player
+        draw_circle_lines(sx, sy - 32., 7., 2., BLACK);
+    }
+    // Corpo e arti: array di linee [x1, y1, x2, y2] relative a (sx, sy)
+    // Linea 0: corpo (collo → bacino)
+    // Linee 1-2: braccia (spalla → mano sinistra/destra)
+    // Linee 3-4: gambe (bacino → piede sinistro/destro)
     for l in [
-        [0., -25., 0., -8.],
-        [0., -20., -8., -15.],
-        [0., -20., 8., -15.],
-        [0., -8., -6., 0.],
-        [0., -8., 6., 0.],
+        [0., -25., 0., -8.],   // corpo
+        [0., -20., -8., -15.], // braccio sinistro
+        [0., -20., 8., -15.],  // braccio destro
+        [0., -8., -6., 0.],    // gamba sinistra
+        [0., -8., 6., 0.],     // gamba destra
     ] {
         draw_line(sx + l[0], sy + l[1], sx + l[2], sy + l[3], 2., BLACK);
     }
 }
 
-// Draw walls
+// Disegna un muro 3D isometrico (cubo con 3 facce visibili)
+// Il muro è composto da triangoli per creare l'effetto 3D
 fn draw_wall(x: usize, y: usize, cam: (f32, f32)) {
     let (sx, sy) = to_screen(x, y, cam);
 
+    // Vertici del cubo isometrico (7 punti)
+    // v[0]: punto più alto (cima del cubo)
+    // v[1-3]: bordi superiori (destra, fronte, sinistra)
+    // v[4-6]: bordi inferiori (destra, fronte, sinistra)
     let v = [
-        vec2(sx, sy - 40.),
-        vec2(sx + 32., sy - 24.),
-        vec2(sx, sy - 8.),
-        vec2(sx - 32., sy - 24.),
-        vec2(sx + 32., sy),
-        vec2(sx, sy + 16.),
-        vec2(sx - 32., sy),
+        vec2(sx, sy - 40.),       // 0: top
+        vec2(sx + 32., sy - 24.), // 1: top-right
+        vec2(sx, sy - 8.),        // 2: top-front
+        vec2(sx - 32., sy - 24.), // 3: top-left
+        vec2(sx + 32., sy),       // 4: bottom-right
+        vec2(sx, sy + 16.),       // 5: bottom-front
+        vec2(sx - 32., sy),       // 6: bottom-left
     ];
 
+    // Colori per le 3 facce visibili (illuminazione simulata)
     let colors = [
-        Color::new(0.8, 0.8, 0.8, 1.),
-        Color::new(0.5, 0.5, 0.5, 1.),
-        Color::new(0.6, 0.6, 0.6, 1.),
+        Color::new(0.8, 0.8, 0.8, 1.), // top: più chiaro
+        Color::new(0.5, 0.5, 0.5, 1.), // right: più scuro
+        Color::new(0.6, 0.6, 0.6, 1.), // left: medio
     ];
 
-    // Draw faces with triangles
+    // Disegna le 3 facce con triangoli (2 triangoli per faccia)
+    // Faccia superiore (top)
     draw_triangle(v[0], v[1], v[2], colors[0]);
     draw_triangle(v[0], v[2], v[3], colors[0]);
+    // Faccia destra
     draw_triangle(v[1], v[4], v[5], colors[1]);
     draw_triangle(v[1], v[5], v[2], colors[1]);
+    // Faccia sinistra
     draw_triangle(v[3], v[2], v[5], colors[2]);
     draw_triangle(v[3], v[5], v[6], colors[2]);
 
-    // draw outline
+    // Disegna i bordi neri per definire il contorno
     for (a, b) in [(0, 1), (1, 2), (2, 3), (3, 0), (1, 4), (2, 5), (3, 6)] {
         draw_line(v[a].x, v[a].y, v[b].x, v[b].y, 1., BLACK);
     }
 }
 
+// Struttura principale del gioco: contiene tutto lo stato di una partita
 struct Game {
-    map: [[Tile; MAP]; MAP],
-    cam: (f32, f32),
-    px: usize,
-    py: usize,
+    map: [[Tile; MAP]; MAP], // Griglia della mappa (Wall o Floor)
+    cam: (f32, f32),         // Offset camera per centrare la vista
+    px: usize,               // Posizione X del player sulla griglia
+    py: usize,               // Posizione Y del player sulla griglia
     // Percorso calcolato da BFS: lista di celle da attraversare per raggiungere il target
     path: Vec<(usize, usize)>,
     // Cooldown movimento: tempo rimanente prima del prossimo passo (in secondi)
     player_cd: f32,
+    // Lista dei mostri presenti nella mappa
+    monsters: Vec<Monster>,
 }
 
 impl Game {
+    // Crea una nuova partita con mappa, player e mostri inizializzati
     fn new() -> Self {
+        // Inizializza tutta la mappa come pavimento
         let mut map = [[Tile::Floor; MAP]; MAP];
 
+        // Crea i muri perimetrali (bordi della mappa)
         for i in 0..MAP {
-            map[0][i] = Tile::Wall;
-            map[MAP - 1][i] = Tile::Wall;
-            map[i][0] = Tile::Wall;
-            map[i][MAP - 1] = Tile::Wall;
+            map[0][i] = Tile::Wall; // bordo superiore
+            map[MAP - 1][i] = Tile::Wall; // bordo inferiore
+            map[i][0] = Tile::Wall; // bordo sinistro
+            map[i][MAP - 1] = Tile::Wall; // bordo destro
         }
 
-        // Add obstacles
+        // Aggiungi ostacoli interni (muri sparsi)
         for (x, y) in [(5, 5), (6, 5), (12, 10)] {
             map[y][x] = Tile::Wall;
         }
@@ -184,11 +226,35 @@ impl Game {
             py: 2,
             path: vec![],
             player_cd: 0.,
+            // Spawn dei mostri in posizioni fisse sulla mappa
+            monsters: vec![
+                Monster {
+                    x: 8,
+                    y: 8,
+                    hp: 30,
+                    cd: 0,
+                },
+                Monster {
+                    x: 12,
+                    y: 4,
+                    hp: 30,
+                    cd: 0,
+                },
+                Monster {
+                    x: 15,
+                    y: 12,
+                    hp: 30,
+                    cd: 0,
+                },
+            ],
         }
     }
 
+    // Aggiorna lo stato del gioco ogni frame
+    // dt = delta time (tempo trascorso dall'ultimo frame)
+    // Ritorna true se il gioco deve terminare (game over)
     fn update(&mut self, dt: f32) -> bool {
-        // fake gaming logic
+        // Premi Space per terminare la partita (debug/test)
         if is_key_pressed(KeyCode::Space) {
             return true;
         }
@@ -229,14 +295,17 @@ impl Game {
         false
     }
 
+    // Disegna tutti gli elementi del gioco sullo schermo
     fn draw(&self) {
-        // draw_text("Game Running....", 20., 40., 30., BLACK);
-        // draw_text("Press Space to die...", 20., 80., 20., DARKGRAY);
+        // Disegna la mappa: itera su tutte le celle della griglia
+        // L'ordine (y poi x) garantisce il corretto z-ordering isometrico
         for y in 0..MAP {
             for x in 0..MAP {
                 if self.map[y][x] == Tile::Wall {
+                    // Cella muro: disegna cubo 3D
                     draw_wall(x, y, self.cam);
                 } else {
+                    // Cella pavimento: disegna un piccolo punto grigio
                     let (sx, sy) = to_screen(x, y, self.cam);
                     draw_circle(sx, sy + 16., 2., LIGHTGRAY);
                 }
@@ -249,36 +318,54 @@ impl Game {
             draw_circle(sx, sy + 16., 4., GOLD);
         }
 
-        // Draw Player
-        draw_stickman(self.px, self.py, self.cam);
+        // Disegna il player (enemy=false → testa tonda)
+        draw_stickman(self.px, self.py, self.cam, false);
+
+        // Disegna tutti i mostri (enemy=true → corna)
+        for m in &self.monsters {
+            draw_stickman(m.x, m.y, self.cam, true);
+        }
     }
 }
 
+// Entry point del gioco - macroquad gestisce il window e il game loop
 #[macroquad::main("Crablo")]
 async fn main() {
     let mut game = Game::new();
     let mut state = AppState::Menu;
 
+    // Game loop principale: gira finché la finestra è aperta
     loop {
+        // Pulisce lo schermo con sfondo bianco
         clear_background(WHITE);
 
+        // State machine: gestisce i diversi stati del gioco
         match state {
+            // Schermata menu iniziale
             AppState::Menu => {
                 draw_text("Menu - Enter to start", 100., 100., 40., BLACK);
                 if is_key_pressed(KeyCode::Enter) {
+                    // Crea nuova partita e passa allo stato Playing
                     game = Game::new();
                     state = AppState::Playing;
                 }
             }
 
+            // Gioco in corso
             AppState::Playing => {
+                // get_frame_time() ritorna il delta time per movimento fluido
                 if game.update(get_frame_time()) {
+                    // Se update() ritorna true, passa a GameOver
                     state = AppState::GameOver;
                 }
                 game.draw();
             }
+
+            // Schermata game over
             AppState::GameOver => {
+                // Disegna il gioco "congelato" sotto l'overlay
                 game.draw();
+                // Overlay bianco semi-trasparente
                 draw_rectangle(
                     0.,
                     0.,
@@ -290,10 +377,12 @@ async fn main() {
                 draw_text("Enter to reset", 100., 150., 20., GRAY);
 
                 if is_key_pressed(KeyCode::Enter) {
+                    // Torna al menu per iniziare una nuova partita
                     state = AppState::Menu
                 }
             }
         }
+        // Aspetta il prossimo frame (necessario per macroquad async)
         next_frame().await;
     }
 }
