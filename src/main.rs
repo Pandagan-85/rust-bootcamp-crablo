@@ -61,6 +61,16 @@ fn to_tile(sx: f32, sy: f32, cam: (f32, f32)) -> (usize, usize) {
     )
 }
 
+// Calcola la distanza Manhattan tra due punti sulla griglia
+// La distanza Manhattan è la somma delle differenze assolute delle coordinate:
+// |x1-x2| + |y1-y2|. Si chiama così perché rappresenta la distanza percorsa
+// in una griglia (come le strade di Manhattan), dove puoi muoverti solo
+// in orizzontale o verticale, mai in diagonale.
+// Usata per determinare se un mostro è adiacente al player (distanza = 1)
+fn dist(p1: (usize, usize), p2: (usize, usize)) -> i32 {
+    (p1.0 as i32 - p2.0 as i32).abs() + (p1.1 as i32 - p2.1 as i32).abs()
+}
+
 // Pathfinding: Breadth-First Search (BFS)
 // Trova il percorso più breve tra start e goal evitando i muri.
 // Ritorna un Vec con le coordinate del percorso (escluso start, incluso goal).
@@ -209,6 +219,8 @@ struct Game {
     monsters: Vec<Monster>,
     // Lista dei testi di danno fluttuanti attivi
     texts: Vec<DmgText>,
+    // Punti vita del player (game over quando <= 0)
+    hp: i32,
 }
 
 impl Game {
@@ -259,6 +271,7 @@ impl Game {
                 },
             ],
             texts: vec![],
+            hp: 100, // Player inizia con 100 HP
         }
     }
 
@@ -266,8 +279,8 @@ impl Game {
     // dt = delta time (tempo trascorso dall'ultimo frame)
     // Ritorna true se il gioco deve terminare (game over)
     fn update(&mut self, dt: f32) -> bool {
-        // Premi Space per terminare la partita (debug/test)
-        if is_key_pressed(KeyCode::Space) {
+        // Controllo game over: se HP <= 0, la partita finisce
+        if self.hp <= 0 {
             return true;
         }
 
@@ -318,6 +331,70 @@ impl Game {
                     self.path.remove(0);
                     self.px = nx;
                     self.py = ny;
+                }
+            }
+        }
+
+        // Logica dei Mostri
+        //
+        // NOTA SULLE CLOSURE IN RUST:
+        // Una closure è una funzione anonima che può "catturare" variabili dall'ambiente circostante.
+        // Sintassi: |parametri| espressione  oppure  |parametri| { blocco }
+        //
+        // Esempi:
+        //   |x| x * 2           → prende x, ritorna x * 2
+        //   |a, b| a + b        → prende due parametri, ritorna la somma
+        //   |m| (m.x, m.y)      → prende un Monster, ritorna una tupla con le sue coordinate
+        //
+        // Perché si usano:
+        // - Passare logica custom a funzioni come map(), filter(), retain()
+        // - Sono concise: evitano di definire funzioni separate per operazioni semplici
+        // - Possono accedere a variabili locali (es. self.px, self.py nel chain sotto)
+        //
+        // Equivalente JavaScript: (x) => x * 2  oppure  function(x) { return x * 2; }
+        //
+        // Calcola le celle occupate per evitare che i mostri si sovrappongano
+        let occupied: Vec<_> = self
+            .monsters
+            .iter()
+            .map(|m| (m.x, m.y)) // Closure: trasforma ogni Monster in una tupla (x, y)
+            .chain(std::iter::once((self.px, self.py))) // Aggiungi la posizione del player
+            .collect();
+
+        // AI dei mostri: ogni mostro agisce quando il suo cooldown raggiunge 0
+        for i in 0..self.monsters.len() {
+            // Decrementa il cooldown del mostro
+            self.monsters[i].cd -= dt;
+
+            // Quando il cooldown arriva a 0, il mostro può agire
+            if self.monsters[i].cd <= 0. {
+                // Reset cooldown: il mostro agirà di nuovo tra 1 secondo
+                self.monsters[i].cd = 1.0;
+
+                let (mx, my) = (self.monsters[i].x, self.monsters[i].y);
+
+                // Calcola la distanza Manhattan dal player
+                let d = dist((mx, my), (self.px, self.py));
+
+                if d == 1 {
+                    // Mostro adiacente al player (distanza 1): ATTACCA!
+                    self.hp -= 5;
+                    // Mostra il danno subito dal player
+                    let (sx, sy) = to_screen(self.px, self.py, self.cam);
+                    self.texts.push(DmgText {
+                        x: sx,
+                        y: sy,
+                        dmg: 5,
+                        life: 1.,
+                    });
+                } else {
+                    // Mostro lontano: INSEGUI il player usando BFS
+                    let path = bfs(&self.map, (mx, my), (self.px, self.py));
+                    // Muovi solo se c'è un percorso e la cella non è occupata
+                    if path.len() > 1 && !occupied.contains(&path[0]) {
+                        self.monsters[i].x = path[0].0;
+                        self.monsters[i].y = path[0].1;
+                    }
                 }
             }
         }
@@ -382,6 +459,16 @@ impl Game {
         for t in &self.texts {
             draw_text(&format!("-{}", t.dmg), t.x, t.y, 20., RED);
         }
+
+        // HUD (Head-Up Display): mostra le statistiche del player
+        // Posizionato in basso a sinistra dello schermo
+        draw_text(
+            &format!("HP: {}", self.hp),
+            20.,
+            screen_height() - 40.,
+            30.,
+            BLACK,
+        );
     }
 }
 
@@ -431,7 +518,9 @@ async fn main() {
                     Color::new(1., 1., 1., 0.7),
                 );
                 draw_text("GAME OVER", 100., 100., 60., RED);
-                draw_text("Enter to reset", 100., 150., 20., GRAY);
+                // Mostra gli HP finali del player (sarà <= 0)
+                draw_text(&format!("HP:{}", game.hp), 100., 160., 30., BLACK);
+                draw_text("Enter to reset", 100., 200., 20., GRAY);
 
                 if is_key_pressed(KeyCode::Enter) {
                     // Torna al menu per iniziare una nuova partita
