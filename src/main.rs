@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use macroquad::prelude::*;
+use std::collections::VecDeque;
 
 const MAP: usize = 20;
 //  dimensione del tile
@@ -27,14 +28,71 @@ fn to_screen(x: usize, y: usize, cam: (f32, f32)) -> (f32, f32) {
     )
 }
 
-// oppiste of to screen, translate isometric view to grid
-
+// Inverso di to_screen: converte coordinate schermo → coordinate griglia
 fn to_tile(sx: f32, sy: f32, cam: (f32, f32)) -> (usize, usize) {
     let (ax, ay) = (sx - cam.0, sy - cam.1);
     (
         ((ax / T_SIZE.0 + ay / T_SIZE.1) / 2.) as usize,
         ((ay / T_SIZE.1 - ax / T_SIZE.0) / 2.) as usize,
     )
+}
+
+// Pathfinding: Breadth-First Search (BFS)
+// Trova il percorso più breve tra start e goal evitando i muri.
+// Ritorna un Vec con le coordinate del percorso (escluso start, incluso goal).
+// Ritorna vec vuoto se non esiste un percorso.
+//
+// BFS esplora "a onde concentriche": prima tutte le celle a distanza 1,
+// poi quelle a distanza 2, ecc. La coda FIFO (First In, First Out) garantisce
+// questo ordine. Se usassimo uno stack LIFO avremmo DFS (Depth-First Search),
+// che va "in profondità" e non garantisce il percorso più breve.
+fn bfs(
+    map: &[[Tile; MAP]; MAP],
+    start: (usize, usize),
+    goal: (usize, usize),
+) -> Vec<(usize, usize)> {
+    // Coda FIFO: celle da esplorare. BFS usa FIFO per garantire il percorso più breve.
+    let mut q = VecDeque::from([start]);
+
+    // Matrice visited: traccia le celle già visitate per evitare loop infiniti.
+    // Senza questo, l'algoritmo continuerebbe a visitare le stesse celle (dead loop).
+    let mut visited = [[false; MAP]; MAP];
+    visited[start.1][start.0] = true;
+
+    // Matrice parent: per ogni cella, memorizza da quale cella ci siamo arrivati.
+    // Serve per ricostruire il percorso una volta raggiunto il goal.
+    let mut parent: [[Option<(usize, usize)>; MAP]; MAP] = [[None; MAP]; MAP];
+
+    // Estrai celle dalla coda finché non è vuota
+    while let Some(curr) = q.pop_front() {
+        // Se abbiamo raggiunto il goal, ricostruiamo il percorso
+        if curr == goal {
+            let mut path = vec![];
+            let mut c = goal;
+            // Risaliamo i parent dal goal fino allo start
+            while c != start {
+                path.push(c);
+                c = parent[c.1][c.0].unwrap();
+            }
+            // Il percorso è al contrario (goal→start), lo invertiamo
+            path.reverse();
+            return path;
+        }
+
+        // Esplora i 4 vicini (su, giù, sinistra, destra)
+        for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+            let (nx, ny) = ((curr.0 as i32 + dx) as usize, (curr.1 as i32 + dy) as usize);
+
+            // Controlla: dentro i bounds, non già visitata, non è un muro
+            if nx < MAP && ny < MAP && !visited[ny][nx] && map[ny][nx] == Tile::Floor {
+                visited[ny][nx] = true; // Marca come visitata PRIMA di aggiungere alla coda
+                parent[ny][nx] = Some(curr); // Ricorda da dove siamo arrivati
+                q.push_back((nx, ny)); // Aggiungi alla coda per esplorarla dopo
+            }
+        }
+    }
+    // Coda vuota e goal non raggiunto = nessun percorso possibile
+    vec![]
 }
 
 // draw hero and monsters
@@ -97,8 +155,8 @@ struct Game {
     cam: (f32, f32),
     px: usize,
     py: usize,
-    //temporary target
-    target: Option<(usize, usize)>,
+    // Percorso calcolato da BFS: lista di celle da attraversare per raggiungere il target
+    path: Vec<(usize, usize)>,
 }
 
 impl Game {
@@ -122,7 +180,7 @@ impl Game {
             cam: (screen_width() / 2., 50.),
             px: 2,
             py: 2,
-            target: None,
+            path: vec![],
         }
     }
 
@@ -132,14 +190,16 @@ impl Game {
             return true;
         }
 
-        // mouse input logic
+        // Input mouse: al click sinistro, calcola il percorso verso la cella cliccata
         if is_mouse_button_pressed(MouseButton::Left) {
             let (mx, my) = mouse_position();
+            // Converte coordinate schermo → coordinate griglia
             let (tx, ty) = to_tile(mx, my, self.cam);
 
-            // check if the click is inside the map bounds
-            if tx < MAP && ty < MAP {
-                self.target = Some((tx, ty));
+            // Verifica: dentro i bounds e non è un muro
+            if tx < MAP && ty < MAP && self.map[ty][tx] == Tile::Floor {
+                // Calcola il percorso con BFS dalla posizione attuale al target
+                self.path = bfs(&self.map, (self.px, self.py), (tx, ty));
             }
         }
         false
@@ -159,11 +219,10 @@ impl Game {
             }
         }
 
-        // Draw the target
-
-        if let Some((tx, ty)) = self.target {
-            let (sx, sy) = to_screen(tx, ty, self.cam);
-            draw_circle(sx, sy + 16., 6., RED);
+        // Disegna il percorso calcolato da BFS come cerchi dorati
+        for (px, py) in &self.path {
+            let (sx, sy) = to_screen(*px, *py, self.cam);
+            draw_circle(sx, sy + 16., 4., GOLD);
         }
 
         // Draw Player
