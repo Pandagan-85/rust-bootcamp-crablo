@@ -157,6 +157,8 @@ struct Game {
     py: usize,
     // Percorso calcolato da BFS: lista di celle da attraversare per raggiungere il target
     path: Vec<(usize, usize)>,
+    // Cooldown movimento: tempo rimanente prima del prossimo passo (in secondi)
+    player_cd: f32,
 }
 
 impl Game {
@@ -181,10 +183,11 @@ impl Game {
             px: 2,
             py: 2,
             path: vec![],
+            player_cd: 0.,
         }
     }
 
-    fn update(&mut self, _dt: f32) -> bool {
+    fn update(&mut self, dt: f32) -> bool {
         // fake gaming logic
         if is_key_pressed(KeyCode::Space) {
             return true;
@@ -202,6 +205,27 @@ impl Game {
                 self.path = bfs(&self.map, (self.px, self.py), (tx, ty));
             }
         }
+
+        // Movimento del player lungo il percorso BFS
+        // Usa un cooldown per controllare la velocità (0.15s tra ogni passo)
+        if !self.path.is_empty() {
+            // Decrementa il cooldown in base al delta time (tempo tra frame)
+            self.player_cd -= dt;
+
+            // Quando il cooldown arriva a 0, è ora di muoversi
+            if self.player_cd <= 0. {
+                // Reset del cooldown per il prossimo passo
+                self.player_cd = 0.15;
+
+                // Prendi la prossima cella dal percorso e sposta il player
+                let next_step = self.path[0];
+                self.px = next_step.0;
+                self.py = next_step.1;
+                // Rimuovi la cella appena raggiunta dal percorso
+                self.path.remove(0);
+            }
+        }
+
         false
     }
 
