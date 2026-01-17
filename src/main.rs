@@ -30,7 +30,16 @@ struct Monster {
     x: usize, // Posizione X sulla griglia
     y: usize, // Posizione Y sulla griglia
     hp: i32,  // Punti vita
-    cd: i32,  // Cooldown per azioni (attacco/movimento)
+    cd: f32,  // Cooldown per azioni (attacco/movimento)
+}
+
+// Struttura per il testo fluttuante del danno (floating damage text)
+// Mostra "-10" che sale e scompare quando colpisci un mostro
+struct DmgText {
+    x: f32,    // Posizione X sullo schermo
+    y: f32,    // Posizione Y sullo schermo (sale nel tempo)
+    dmg: i32,  // Quantità di danno da mostrare
+    life: f32, // Tempo rimanente prima che il testo scompaia (in secondi)
 }
 
 // Converte coordinate griglia (x, y) → coordinate schermo (sx, sy)
@@ -198,6 +207,8 @@ struct Game {
     player_cd: f32,
     // Lista dei mostri presenti nella mappa
     monsters: Vec<Monster>,
+    // Lista dei testi di danno fluttuanti attivi
+    texts: Vec<DmgText>,
 }
 
 impl Game {
@@ -232,21 +243,22 @@ impl Game {
                     x: 8,
                     y: 8,
                     hp: 30,
-                    cd: 0,
+                    cd: 0.,
                 },
                 Monster {
                     x: 12,
                     y: 4,
                     hp: 30,
-                    cd: 0,
+                    cd: 0.,
                 },
                 Monster {
                     x: 15,
                     y: 12,
                     hp: 30,
-                    cd: 0,
+                    cd: 0.,
                 },
             ],
+            texts: vec![],
         }
     }
 
@@ -258,6 +270,14 @@ impl Game {
         if is_key_pressed(KeyCode::Space) {
             return true;
         }
+
+        // Aggiorna animazione testi di danno fluttuanti
+        // retain_mut mantiene solo i testi con life > 0, rimuovendo quelli scaduti
+        self.texts.retain_mut(|t| {
+            t.life -= dt; // Decrementa il tempo di vita
+            t.y -= 20. * dt; // Fa salire il testo verso l'alto
+            t.life > 0. // Ritorna true se il testo deve rimanere
+        });
 
         // Input mouse: al click sinistro, calcola il percorso verso la cella cliccata
         if is_mouse_button_pressed(MouseButton::Left) {
@@ -283,16 +303,48 @@ impl Game {
                 // Reset del cooldown per il prossimo passo
                 self.player_cd = 0.15;
 
-                // Prendi la prossima cella dal percorso e sposta il player
-                let next_step = self.path[0];
-                self.px = next_step.0;
-                self.py = next_step.1;
-                // Rimuovi la cella appena raggiunta dal percorso
-                self.path.remove(0);
+                // Prossima cella nel percorso
+                let (nx, ny) = self.path[0];
+
+                // Logica di combattimento: controlla se c'è un mostro nella prossima cella
+                // iter().position() cerca l'indice del primo mostro che occupa (nx, ny)
+                if let Some(i) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) {
+                    // Mostro trovato! Attacca invece di muoversi
+                    self.damage_monster(i, 10);
+                    // Ferma il movimento (il player deve cliccare di nuovo)
+                    self.path.clear();
+                } else {
+                    // Nessun mostro: muovi il player nella cella
+                    self.path.remove(0);
+                    self.px = nx;
+                    self.py = ny;
+                }
             }
         }
 
         false
+    }
+
+    // Infligge danno a un mostro e gestisce la sua morte
+    // idx: indice del mostro nel vettore monsters
+    // amount: quantità di danno da infliggere
+    fn damage_monster(&mut self, idx: usize, amount: i32) {
+        // Sottrai HP al mostro
+        self.monsters[idx].hp -= amount;
+
+        // Crea il testo fluttuante del danno sopra il mostro
+        let (sx, sy) = to_screen(self.monsters[idx].x, self.monsters[idx].y, self.cam);
+        self.texts.push(DmgText {
+            x: sx,
+            y: sy - 40., // Parte sopra la testa del mostro
+            dmg: amount,
+            life: 1., // Dura 1 secondo
+        });
+
+        // Se HP <= 0, il mostro muore: rimuovilo dal vettore
+        if self.monsters[idx].hp <= 0 {
+            self.monsters.remove(idx);
+        }
     }
 
     // Disegna tutti gli elementi del gioco sullo schermo
@@ -324,6 +376,11 @@ impl Game {
         // Disegna tutti i mostri (enemy=true → corna)
         for m in &self.monsters {
             draw_stickman(m.x, m.y, self.cam, true);
+        }
+
+        // Disegna i testi di danno fluttuanti (es. "-10" in rosso che sale)
+        for t in &self.texts {
+            draw_text(&format!("-{}", t.dmg), t.x, t.y, 20., RED);
         }
     }
 }
